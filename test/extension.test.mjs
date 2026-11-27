@@ -12,10 +12,12 @@ function setup(cwd = process.cwd()) {
   const events = new Map();
   const calls = [];
   const plans = [];
+  const sent = [];
+  const notices = [];
   let command;
   const ctx = {
     cwd,
-    ui: { setStatus() {}, notify() {} },
+    ui: { setStatus() {}, notify: (message) => notices.push(message) },
     hasPendingMessages: () => false,
     modelRegistry: {
       find: (provider, id) => [advisorA, advisorB].find(m => m.provider === provider && m.id === id),
@@ -31,6 +33,7 @@ function setup(cwd = process.cwd()) {
   };
   autocomm({
     on: (name, handler) => events.set(name, handler),
+    sendUserMessage: (text) => sent.push(text),
     registerCommand(name, registration) {
       assert.equal(name, 'autocomm');
       command = registration.handler;
@@ -40,6 +43,9 @@ function setup(cwd = process.cwd()) {
   return {
     calls,
     plans,
+    sent,
+    notices,
+    events,
     command: args => command(args, ctx),
     start: prompt => events.get('before_agent_start')({ messageType: 'user', prompt }, ctx),
     settle: () => events.get('agent_before_settle')({
@@ -156,4 +162,45 @@ test('auto mode caps follow-ups and falls back to an ordinary run if kickoff ret
   for (let i = 0; i < 8; i++) assert.equal((await app.settle()).continue, true);
   assert.equal(await app.settle(), undefined);
   assert.equal(app.calls.length, 10);
+});
+
+test('selecting a model with /autocomm model does not print a usage error', async () => {
+  const app = setup();
+  await app.command(`model ${advisorA.id}`);
+  assert.ok(app.notices.every((notice) => !/^Usage:/.test(notice)));
+  assert.ok(app.notices.some((notice) => notice.includes(advisorA.id)));
+});
+
+test('a quoted task sets the goal and launches with a kickoff instead of a usage error', async () => {
+  const app = setup();
+  await app.command(`model ${advisorA.id}`);
+  await app.command('on');
+  app.plans.push('Add a test for the change.');
+  await app.command('Build a deterministic greeting and add a unit test for it.');
+  assert.equal(app.sent.length, 1);
+  assert.match(app.sent[0], /AutoComm advisor suggestion: Add a test for the change\./);
+  assert.deepEqual(JSON.parse(app.calls[0].context.messages[0].content), {
+    phase: 'kickoff', goal: 'Build a deterministic greeting and add a unit test for it.', latestReply: '', previousAdvice: [], workspaceFiles: [],
+  });
+});
+
+test('a launched task keeps its own goal across follow-up reviews, not the injected prompt', async () => {
+  const app = setup();
+  await app.command(`model ${advisorA.id}`);
+  await app.command('auto');
+  app.plans.push('First milestone.', 'Second milestone.');
+  await app.command('Refactor the parser.');
+  assert.equal(app.calls[0].context.messages[0].content.includes('Refactor the parser.'), true);
+  // The injected user message starts a run; it must not be re-read as a new goal.
+  assert.equal(await app.start('AutoComm advisor suggestion: First milestone.'), undefined);
+  const result = await app.settle();
+  assert.equal(result.continue, true);
+  assert.equal(JSON.parse(app.calls[1].context.messages[0].content).goal, 'Refactor the parser.');
+});
+
+test('an unknown /autocomm subcommand form still shows usage only for bare noise', async () => {
+  const app = setup();
+  // Empty /autocomm behaves like status and never claims a launch.
+  assert.equal(await app.command(''), undefined);
+  assert.equal(app.sent.length, 0);
 });
