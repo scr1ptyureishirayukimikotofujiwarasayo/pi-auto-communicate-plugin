@@ -3,8 +3,8 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "An OpenRouter advisor for the Pi coding agent.",
-  "keywords": ["pi-package", "openrouter"],
+  "description": "An advisor-model loop for the Pi coding agent: any provider reviews Pi's work and suggests the next milestone.",
+  "keywords": ["pi-package", "advisor", "agent"],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/scr1ptyureishirayukimikotofujiwarasayo/pi-auto-communicate-plugin.git"

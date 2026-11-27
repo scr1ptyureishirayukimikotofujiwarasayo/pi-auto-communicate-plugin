@@ -7,6 +7,7 @@ import autocomm from '../extension.ts';
 
 const advisorA = { id: 'example/advisor-a', provider: 'openrouter' };
 const advisorB = { id: 'example/advisor-b', provider: 'openrouter' };
+const advisorC = { id: 'gpt-5.2', provider: 'github-copilot' };
 
 function setup(cwd = process.cwd()) {
   const events = new Map();
@@ -30,7 +31,8 @@ function setup(cwd = process.cwd()) {
     },
     hasPendingMessages: () => false,
     modelRegistry: {
-      find: (provider, id) => [advisorA, advisorB].find(m => m.provider === provider && m.id === id),
+      find: (provider, id) => [advisorA, advisorB, advisorC].find(m => m.provider === provider && m.id === id),
+      getAvailable: () => [advisorA, advisorB, advisorC],
       hasConfiguredAuth: () => true,
       streamSimple(model, context, options) {
         calls.push({ model, context, options });
@@ -182,6 +184,26 @@ test('selecting a model with /autocomm model does not print a usage error', asyn
   await app.command(`model ${advisorA.id}`);
   assert.ok(app.notices.every((notice) => !/^Usage:/.test(notice)));
   assert.ok(app.notices.some((notice) => notice.includes(advisorA.id)));
+});
+
+test('advisor can be any configured provider, selected as provider/id', async () => {
+  const app = setup();
+  await app.command(`model ${advisorC.provider}/${advisorC.id}`); // github-copilot/gpt-5.2, no internal slash
+  await app.command('on');
+  app.start('Draft the change.');
+  app.plans.push('Check the test matrix.', 'DONE');
+  assert.equal((await app.settle()).continue, true);
+  assert.equal(app.calls[0].model, advisorC, 'streamed on a non-OpenRouter provider');
+});
+
+test('a double-colon disambiguates provider for ids that contain slashes', async () => {
+  const app = setup();
+  await app.command('model openrouter::example/advisor-a');
+  await app.command('on');
+  app.start('Verify the greeting.');
+  app.plans.push('Check one.', 'DONE');
+  await app.settle();
+  assert.equal(app.calls[0].model, advisorA, 'resolved provider=openrouter, id=example/advisor-a');
 });
 
 test('a quoted task sets the goal and launches with a kickoff instead of a usage error', async () => {
