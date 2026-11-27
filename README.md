@@ -1,6 +1,6 @@
 # AutoComm for Pi
 
-AutoComm lets a separate advisor model review Pi's replies and selected workspace files and suggest one milestone at a time. The advisor can be any model you have credentials for — OpenRouter, GitHub Copilot, Anthropic, OpenAI, or any provider Pi supports — while Pi keeps its own coding model and handles the work. In auto mode, the advisor proposes the first milestone before Pi starts.
+AutoComm lets a separate advisor model review Pi's replies and selected workspace files and suggest one milestone at a time. The advisor can be any model you have credentials for â OpenRouter, GitHub Copilot, Anthropic, OpenAI, or any provider Pi supports â while Pi keeps its own coding model and handles the work. In auto mode, the advisor proposes the first milestone before Pi starts.
 
 ## Install
 

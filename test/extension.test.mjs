@@ -169,7 +169,7 @@ test('auto mode kicks off before Pi replies and reviews fresh excerpts of shared
     workspaceFiles: [{ path, content: initial, truncated: false }],
   });
 
-  await writeFile(file, 'x'.repeat(4095) + '😀');
+  await writeFile(file, 'x'.repeat(4095) + 'ð');
   assert.equal((await app.settle()).continue, true);
   const checkpoint = JSON.parse(app.calls[1].context.messages[0].content);
   assert.equal(checkpoint.phase, 'checkpoint');
