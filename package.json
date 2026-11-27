@@ -1,6 +1,6 @@
 {
   "name": "pi-autocomm",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "An OpenRouter advisor for the Pi coding agent.",

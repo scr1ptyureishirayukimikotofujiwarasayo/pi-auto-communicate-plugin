@@ -38,8 +38,45 @@ The advisor sees the goal and any shared file excerpts before Pi starts. At each
 | `/autocomm share <path>` | Include a workspace-relative text file in future advisor calls this session. Use `/` in paths. |
 | `/autocomm unshare [path]` | Remove one shared path, or clear the list if no path is given. This cannot retract data already sent. |
 | `/autocomm status` | Show the mode, advisor, follow-up limit, and shared paths. |
+| `/autocomm "<task>"` | In `auto` mode, launch this task: the advisor kicks it off and Pi runs it. Before `auto` is set, records the goal only. |
 
 AutoComm starts off. When enabled, it sends excerpts of your task and Pi's latest reply, previous advisor suggestions for that task, and the first 4 KiB of up to six explicitly shared files to OpenRouter. Suggestions show up in the session. The loop stops at `DONE` or at the follow-up limit. If auto mode gets no usable kickoff advice, Pi handles the prompt normally without advisor follow-ups. Advisor requests can incur separate OpenRouter charges. **Excerpts are not redacted**; don't share files, prompts, or replies containing secrets.
+
+## Examples
+
+Pick an advisor. This only changes the advisor and does not disturb Pi's coding model or session, so you can switch at any time:
+
+```text
+/autocomm model anthropic/claude-opus-4.6
+```
+
+Hand the advisor a task to lead. Turn automatic mode on first, then hand it the goal; AutoComm asks for a kickoff plan, starts Pi, and feeds back one milestone at a time:
+
+```text
+/autocomm auto
+/autocomm Build a deterministic greeting function and add a unit test for it.
+```
+
+Review Pi's replies without leading it (`on` mode; up to three follow-ups; the advisor waits for Pi to reply first):
+
+```text
+/autocomm on
+```
+
+Give the advisor concrete files to reason over. A shared file's first 4 KiB is sent on every later call until you unshare it:
+
+```text
+/autocomm share src/greeting.ts
+/autocomm share tests/greeting.test.ts
+```
+
+Stop consulting and clean up:
+
+```text
+/autocomm unshare            # drop all shared files (cannot retract data already sent)
+/autocomm off                # disable the advisor and cancel any in-flight request
+/autocomm status             # show mode, advisor, follow-up limit, and shared paths
+```
 
 ## Develop
 
