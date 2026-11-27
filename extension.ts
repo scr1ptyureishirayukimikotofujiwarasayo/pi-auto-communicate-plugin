@@ -105,14 +105,43 @@ export default function autocomm(pi: ExtensionAPI) {
     return { message: adviceMessage(suggestion, true) };
   });
 
-  pi.registerCommand(NAME, {
-    description: "OpenRouter advisor: <task>, on, auto, off, model, share, unshare, status",
-    handler: async (args, ctx) => {
-      const [, action = "", value = ""] = /^(\S+)(?:\s+([\s\S]+))?$/.exec(args.trim()) ?? [];
-      // A leading known subcommand is handled below; anything else is read as
-      // the advisor's goal, so an initial task never trips the usage hint.
-      const KNOWN = new Set(["model", "on", "auto", "off", "share", "unshare", "status"]);
-      if (!KNOWN.has(action) && action) {
+  // Bare /autocomm opens this menu instead of a usage line. Each choice routes
+  // through runCommand with the canonical subcommand, so behaviour stays in one
+  // place and stays backward compatible with the explicit subcommand forms.
+  async function menu(ctx: ExtensionContext) {
+    if (!ctx.hasUI) return runCommand("", ctx);
+    const mode = enabled ? automatic ? "auto" : "on" : "off";
+    const choice = await ctx.ui.select(
+      `AutoComm \u2014 ${mode}${modelId ? `, advisor ${modelId}` : ", no advisor"}`,
+      [
+        "On \u2014 Pi leads, advisor reviews replies",
+        "Auto \u2014 advisor leads each task",
+        "Off",
+        "Change advisor model",
+        "Share a file",
+        "Unshare all files",
+        "Show status",
+      ],
+    );
+    if (choice === undefined) return;
+    if (choice === "On \u2014 Pi leads, advisor reviews replies") return runCommand("on", ctx);
+    if (choice === "Auto \u2014 advisor leads each task") return runCommand("auto", ctx);
+    if (choice === "Off") return runCommand("off", ctx);
+    if (choice === "Change advisor model") return runCommand("model", ctx);
+    if (choice === "Unshare all files") return runCommand("unshare", ctx);
+    if (choice === "Show status") return runCommand("status", ctx);
+    if (choice === "Share a file") {
+      const path = await ctx.ui.input("Share a workspace file", "path/to/file");
+      if (path) return runCommand(`share ${path.trim()}`, ctx);
+    }
+  }
+
+  async function runCommand(args: string, ctx: ExtensionContext) {
+    const [, action = "", value = ""] = /^(\S+)(?:\s+([\s\S]+))?$/.exec(args.trim()) ?? [];
+    // A leading known subcommand is handled below; anything else is read as
+    // the advisor's goal, so an initial task never trips the usage hint.
+    const KNOWN = new Set(["model", "on", "auto", "off", "share", "unshare", "status"]);
+    if (!KNOWN.has(action) && action) {
         if (!enabled) {
           ctx.ui.notify("Turn the advisor on first with /autocomm on or /autocomm auto.", "warning");
           return;
@@ -133,93 +162,98 @@ export default function autocomm(pi: ExtensionAPI) {
         ctx.ui.notify(`AutoComm launched this task: ${excerpt(args.trim(), 240)}`, "info");
         return;
       }
-      switch (action) {
-        case "model": {
-          let id = value;
-          if (!id) {
-            if (!ctx.hasUI) {
-              ctx.ui.notify("Use /autocomm model <OpenRouter model id>.", "warning");
-              return;
-            }
-            const ids = [...new Set(ctx.modelRegistry.getAll()
-              .filter((model) => model.provider === "openrouter")
-              .map((model) => model.id))].sort();
-            if (!ids.length) {
-              ctx.ui.notify("No OpenRouter models found in Pi's catalogue.", "warning");
-              return;
-            }
-            id = await ctx.ui.select("OpenRouter advisor model", ids) ?? "";
-            if (!id) return;
-          }
-          const model = ctx.modelRegistry.find("openrouter", id);
-          if (!model) {
-            ctx.ui.notify(`OpenRouter model not found: ${id}`, "warning");
+    if (!action && ctx.hasUI) return menu(ctx);
+    switch (action) {
+      case "model": {
+        let id = value;
+        if (!id) {
+          if (!ctx.hasUI) {
+            ctx.ui.notify("Use /autocomm model <OpenRouter model id>.", "warning");
             return;
           }
-          if (modelId !== model.id) active?.abort();
-          modelId = model.id;
-          updateStatus(ctx);
-          ctx.ui.notify(`AutoComm advisor: ${modelId}. Pi's coding model is unchanged.`, "info");
+          const ids = [...new Set(ctx.modelRegistry.getAll()
+            .filter((model) => model.provider === "openrouter")
+            .map((model) => model.id))].sort();
+          if (!ids.length) {
+            ctx.ui.notify("No OpenRouter models found in Pi's catalogue.", "warning");
+            return;
+          }
+          id = await ctx.ui.select("OpenRouter advisor model", ids) ?? "";
+          if (!id) return;
+        }
+        const model = ctx.modelRegistry.find("openrouter", id);
+        if (!model) {
+          ctx.ui.notify(`OpenRouter model not found: ${id}`, "warning");
           return;
         }
-        case "on":
-        case "auto": {
-          const model = modelId && ctx.modelRegistry.find("openrouter", modelId);
-          if (!model) {
-            ctx.ui.notify("Pick an advisor first with /autocomm model.", "warning");
-            return;
-          }
-          if (!ctx.modelRegistry.hasConfiguredAuth(model)) {
-            ctx.ui.notify("Use /login openrouter or set OPENROUTER_API_KEY first.", "warning");
-            return;
-          }
-          if (automatic !== (action === "auto")) clearTask();
-          automatic = action === "auto";
-          enabled = true;
-          updateStatus(ctx);
-          ctx.ui.notify(`AutoComm ${action}. ${automatic ? "Your next prompt starts with the advisor. " : ""}OpenRouter receives task text, Pi reply excerpts, and excerpts of explicitly shared files.`, "info");
-          return;
-        }
-        case "off":
-          enabled = false;
-          automatic = false;
-          clearTask();
-          updateStatus(ctx);
-          ctx.ui.notify("AutoComm off. Pi's current work is not interrupted.", "info");
-          return;
-        case "share": {
-          if (sharedCwd !== ctx.cwd) {
-            sharedFiles.clear();
-            sharedCwd = ctx.cwd;
-          }
-          if (sharedFiles.has(value)) return;
-          if (sharedFiles.size >= MAX_FILES) {
-            ctx.ui.notify(`Share at most ${MAX_FILES} files. Use /autocomm unshare first.`, "warning");
-            return;
-          }
-          if (!value || !await readSharedFile(ctx.cwd, value)) {
-            ctx.ui.notify("Use /autocomm share <workspace-relative text file>. Hidden, sensitive-name, and out-of-workspace files are not accepted.", "warning");
-            return;
-          }
-          if (sharedCwd !== ctx.cwd || sharedFiles.size >= MAX_FILES) return;
-          sharedFiles.add(value);
-          ctx.ui.notify(`Shared with OpenRouter for future advisor calls this session: ${value}. Excerpts are not redacted.`, "info");
-          return;
-        }
-        case "unshare":
-          if (value) sharedFiles.delete(value);
-          else sharedFiles.clear();
-          active?.abort();
-          ctx.ui.notify(value ? `Stopped sharing: ${value}` : "Cleared all shared files.", "info");
-          return;
-        case "":
-        case "status":
-          ctx.ui.notify(`AutoComm ${enabled ? automatic ? "auto" : "on" : "off"} | Advisor: ${modelId ?? "not selected"} | Up to ${automatic ? MAX_AUTO_FOLLOW_UPS : MAX_STEPS} follow-ups per task.\nShared files: ${sharedCwd === ctx.cwd && sharedFiles.size ? [...sharedFiles].join(", ") : "none"}`, "info");
-          return;
-        default:
-          ctx.ui.notify("Usage: /autocomm on | auto | off | model [id] | share <path> | unshare [path] | status", "warning");
+        if (modelId !== model.id) active?.abort();
+        modelId = model.id;
+        updateStatus(ctx);
+        ctx.ui.notify(`AutoComm advisor: ${modelId}. Pi's coding model is unchanged.`, "info");
+        return;
       }
-    },
+      case "on":
+      case "auto": {
+        const model = modelId && ctx.modelRegistry.find("openrouter", modelId);
+        if (!model) {
+          ctx.ui.notify("Pick an advisor first with /autocomm model.", "warning");
+          return;
+        }
+        if (!ctx.modelRegistry.hasConfiguredAuth(model)) {
+          ctx.ui.notify("Use /login openrouter or set OPENROUTER_API_KEY first.", "warning");
+          return;
+        }
+        if (automatic !== (action === "auto")) clearTask();
+        automatic = action === "auto";
+        enabled = true;
+        updateStatus(ctx);
+        ctx.ui.notify(`AutoComm ${action}. ${automatic ? "Your next prompt starts with the advisor. " : ""}OpenRouter receives task text, Pi reply excerpts, and excerpts of explicitly shared files.`, "info");
+        return;
+      }
+      case "off":
+        enabled = false;
+        automatic = false;
+        clearTask();
+        updateStatus(ctx);
+        ctx.ui.notify("AutoComm off. Pi's current work is not interrupted.", "info");
+        return;
+      case "share": {
+        if (sharedCwd !== ctx.cwd) {
+          sharedFiles.clear();
+          sharedCwd = ctx.cwd;
+        }
+        if (sharedFiles.has(value)) return;
+        if (sharedFiles.size >= MAX_FILES) {
+          ctx.ui.notify(`Share at most ${MAX_FILES} files. Use /autocomm unshare first.`, "warning");
+          return;
+        }
+        if (!value || !await readSharedFile(ctx.cwd, value)) {
+          ctx.ui.notify("Use /autocomm share <workspace-relative text file>. Hidden, sensitive-name, and out-of-workspace files are not accepted.", "warning");
+          return;
+        }
+        if (sharedCwd !== ctx.cwd || sharedFiles.size >= MAX_FILES) return;
+        sharedFiles.add(value);
+        ctx.ui.notify(`Shared with OpenRouter for future advisor calls this session: ${value}. Excerpts are not redacted.`, "info");
+        return;
+      }
+      case "unshare":
+        if (value) sharedFiles.delete(value);
+        else sharedFiles.clear();
+        active?.abort();
+        ctx.ui.notify(value ? `Stopped sharing: ${value}` : "Cleared all shared files.", "info");
+        return;
+      case "":
+      case "status":
+        ctx.ui.notify(`AutoComm ${enabled ? automatic ? "auto" : "on" : "off"} | Advisor: ${modelId ?? "not selected"} | Up to ${automatic ? MAX_AUTO_FOLLOW_UPS : MAX_STEPS} follow-ups per task.\nShared files: ${sharedCwd === ctx.cwd && sharedFiles.size ? [...sharedFiles].join(", ") : "none"}`, "info");
+        return;
+      default:
+        ctx.ui.notify("Usage: /autocomm on | auto | off | model [id] | share <path> | unshare [path] | status", "warning");
+    }
+  }
+
+  pi.registerCommand(NAME, {
+    description: "OpenRouter advisor menu, or: <task>, on, auto, off, model, share, unshare, status",
+    handler: (args, ctx) => runCommand(args, ctx),
   });
 
   pi.on("agent_before_settle", async (event, ctx) => {

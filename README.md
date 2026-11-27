@@ -18,7 +18,7 @@ pi -e ./extension.ts
 
 ## Use
 
-Authenticate with `/login openrouter` or set `OPENROUTER_API_KEY` before launching Pi. Run `/autocomm model` to pick an advisor. To have it lead from the start, launch Pi in the project directory and use:
+Authenticate with `/login openrouter` or set `OPENROUTER_API_KEY` before launching Pi. Run `/autocomm model` to pick an advisor, or run bare `/autocomm` to open a menu of every action. To have it lead from the start, launch Pi in the project directory and use:
 
 ```text
 /autocomm share src/greeting.ts
@@ -30,6 +30,7 @@ The advisor sees the goal and any shared file excerpts before Pi starts. At each
 
 | Command | Effect |
 | --- | --- |
+| `/autocomm` | Open a menu: on, auto, off, change advisor, share a file, unshare, or show status. In a non-interactive run it shows status instead. |
 | `/autocomm model` | Open the OpenRouter model picker. |
 | `/autocomm model <id>` | Select or switch advisors without changing Pi's coding model. |
 | `/autocomm on` | Let Pi start on its own, then review its replies for up to three follow-ups. |

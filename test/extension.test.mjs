@@ -14,10 +14,20 @@ function setup(cwd = process.cwd()) {
   const plans = [];
   const sent = [];
   const notices = [];
+  const selections = [];
   let command;
+  const state = { choose: undefined };
   const ctx = {
     cwd,
-    ui: { setStatus() {}, notify: (message) => notices.push(message) },
+    hasUI: true,
+    ui: {
+      setStatus() {},
+      notify: (message) => notices.push(message),
+      select: (title, choices) => {
+        selections.push({ title, choices });
+        return Promise.resolve(state.choose ? state.choose(title, choices) : undefined);
+      },
+    },
     hasPendingMessages: () => false,
     modelRegistry: {
       find: (provider, id) => [advisorA, advisorB].find(m => m.provider === provider && m.id === id),
@@ -45,6 +55,9 @@ function setup(cwd = process.cwd()) {
     plans,
     sent,
     notices,
+    selections,
+    get choose() { return state.choose; },
+    set choose(handler) { state.choose = handler; },
     events,
     command: args => command(args, ctx),
     start: prompt => events.get('before_agent_start')({ messageType: 'user', prompt }, ctx),
@@ -203,4 +216,40 @@ test('an unknown /autocomm subcommand form still shows usage only for bare noise
   // Empty /autocomm behaves like status and never claims a launch.
   assert.equal(await app.command(''), undefined);
   assert.equal(app.sent.length, 0);
+});
+
+test('bare /autocomm opens a menu offering every subcommand', async () => {
+  const app = setup();
+  await app.command('');
+  assert.equal(app.selections.length, 1);
+  assert.match(app.selections[0].title, /AutoComm/);
+  assert.deepEqual(app.selections[0].choices, [
+    'On \u2014 Pi leads, advisor reviews replies',
+    'Auto \u2014 advisor leads each task',
+    'Off',
+    'Change advisor model',
+    'Share a file',
+    'Unshare all files',
+    'Show status',
+  ]);
+});
+
+test('choosing On in the menu enables the advisor and keeps the goal on later reviews', async () => {
+  const app = setup();
+  await app.command(`model ${advisorA.id}`);
+  app.choose = () => 'On \u2014 Pi leads, advisor reviews replies';
+  await app.command('');
+  app.start('Greet the reviewer.');
+  app.plans.push('Run the test.', 'DONE');
+  const result = await app.settle();
+  assert.equal(result.continue, true);
+  assert.equal(JSON.parse(app.calls[0].context.messages[0].content).phase, 'review');
+});
+
+test('choosing Show status in the menu routes to the status subcommand', async () => {
+  const app = setup();
+  app.choose = () => 'Show status';
+  await app.command('');
+  assert.equal(app.selections.length, 1);
+  assert.match(app.notices.at(-1), /AutoComm off \| Advisor: not selected/);
 });
