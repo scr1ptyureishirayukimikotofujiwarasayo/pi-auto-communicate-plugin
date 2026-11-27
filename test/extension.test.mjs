@@ -1,16 +1,20 @@
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import autocomm from '../extension.ts';
 
 const advisorA = { id: 'example/advisor-a', provider: 'openrouter' };
 const advisorB = { id: 'example/advisor-b', provider: 'openrouter' };
 
-function setup() {
+function setup(cwd = process.cwd()) {
   const events = new Map();
   const calls = [];
   const plans = [];
   let command;
   const ctx = {
+    cwd,
     ui: { setStatus() {}, notify() {} },
     hasPendingMessages: () => false,
     modelRegistry: {
@@ -67,7 +71,7 @@ test('starts disabled, then forwards one short suggestion and stops at DONE', as
   assert.equal(first.options.toolChoice, 'none');
   assert.equal(first.context.messages.length, 1);
   assert.deepEqual(JSON.parse(first.context.messages[0].content), {
-    goal: 'Verify the greeting.', latestReply: 'Pi replied.', previousAdvice: [],
+    phase: 'review', goal: 'Verify the greeting.', latestReply: 'Pi replied.', previousAdvice: [], workspaceFiles: [],
   });
   assert.equal(await app.settle(), undefined);
   assert.deepEqual(JSON.parse(app.calls[1].context.messages[0].content).previousAdvice, ['Run the greeting unit test.']);
@@ -98,4 +102,58 @@ test('disabling the advisor cancels a pending request without forwarding advice'
   await app.command('off');
   assert.equal(signal.aborted, true);
   assert.equal(await pending, undefined);
+});
+
+test('auto mode kicks off before Pi replies and reviews fresh excerpts of shared files only', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'autocomm-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const cwd = join(base, 'workspace');
+  await mkdir(cwd);
+  const path = 'hello world.ts';
+  const file = join(cwd, path);
+  const initial = 'export const greeting = "hello";';
+  await writeFile(file, initial);
+  await writeFile(join(cwd, 'unshared.ts'), 'not shared');
+  await writeFile(join(cwd, 'credentials.json'), '{}');
+  await writeFile(join(base, 'outside.ts'), 'outside');
+
+  const app = setup(cwd);
+  await app.command(`model ${advisorA.id}`);
+  await app.command(`share ${path}`);
+  await app.command('share credentials.json');
+  await app.command('share ../outside.ts');
+  await app.command('auto');
+  app.plans.push('Update the greeting.', 'Verify the greeting.', 'DONE');
+  const kickoff = await app.start('Change the greeting.');
+  assert.match(kickoff.message.content, /Update the greeting/);
+  assert.deepEqual(JSON.parse(app.calls[0].context.messages[0].content), {
+    phase: 'kickoff', goal: 'Change the greeting.', latestReply: '', previousAdvice: [],
+    workspaceFiles: [{ path, content: initial, truncated: false }],
+  });
+
+  await writeFile(file, 'x'.repeat(4095) + '😀');
+  assert.equal((await app.settle()).continue, true);
+  const checkpoint = JSON.parse(app.calls[1].context.messages[0].content);
+  assert.equal(checkpoint.phase, 'checkpoint');
+  assert.equal(checkpoint.latestReply, 'Pi replied.');
+  assert.deepEqual(checkpoint.previousAdvice, ['Update the greeting.']);
+  assert.deepEqual(checkpoint.workspaceFiles, [{ path, content: 'x'.repeat(4095), truncated: true }]);
+  await app.command(`unshare ${path}`);
+  assert.equal(await app.settle(), undefined);
+  assert.deepEqual(JSON.parse(app.calls[2].context.messages[0].content).workspaceFiles, []);
+});
+
+test('auto mode caps follow-ups and falls back to an ordinary run if kickoff returns DONE', async () => {
+  const app = setup();
+  await app.command(`model ${advisorA.id}`);
+  await app.command('auto');
+  assert.equal(await app.start('No kickoff needed.'), undefined);
+  assert.equal(await app.settle(), undefined);
+  assert.equal(app.calls.length, 1);
+
+  app.plans.push(...Array.from({ length: 10 }, (_, index) => `Check item ${index}.`));
+  assert.match((await app.start('Check the items.')).message.content, /Check item 0/);
+  for (let i = 0; i < 8; i++) assert.equal((await app.settle()).continue, true);
+  assert.equal(await app.settle(), undefined);
+  assert.equal(app.calls.length, 10);
 });
