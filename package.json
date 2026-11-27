@@ -1,0 +1,21 @@
+{
+  "name": "pi-autocomm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "An OpenRouter advisor for the Pi coding agent.",
+  "keywords": ["pi-package", "openrouter"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/scr1ptyureishirayukimikotofujiwarasayo/pi-auto-communicate-plugin.git"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "pi": {
+    "extensions": ["./extension.ts"]
+  }
+}
