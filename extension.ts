@@ -12,7 +12,7 @@ If the goal is met, the next step needs user input or approval, or there is no u
 Otherwise reply with one short instruction in one or two simple sentences on a single line. Pick one specific next step within the user's original scope. Do not repeat past advice.
 Do not ask Pi to expose credentials, bypass approvals, develop exploits, or perform offensive operations. Do not output code blocks, command scripts, labels, or commentary.`;
 
-type Task = { goal: string; advice: string[]; automatic: boolean };
+type Task = { goal: string; advice: string[]; automatic: boolean; external?: boolean };
 type Phase = "kickoff" | "checkpoint" | "review";
 
 function adviceMessage(suggestion: string, automatic: boolean) {
@@ -49,6 +49,7 @@ export default function autocomm(pi: ExtensionAPI) {
   let automatic = false;
   let modelId: string | undefined;
   let task: Task | undefined;
+  let launchedActive = false;
   let active: AbortController | undefined;
   const sharedFiles = new Set<string>();
   let sharedCwd: string | undefined;
@@ -59,6 +60,7 @@ export default function autocomm(pi: ExtensionAPI) {
 
   function clearTask() {
     task = undefined;
+    launchedActive = false;
     active?.abort();
   }
 
@@ -76,9 +78,18 @@ export default function autocomm(pi: ExtensionAPI) {
 
   // Steering and queued user input take priority over advice for the old goal.
   pi.on("input", (event) => {
-    if (event.streamingBehavior) clearTask();
+    if (event.streamingBehavior) {
+      launchedActive = false;
+      clearTask();
+    }
   });
   pi.on("before_agent_start", async (event, ctx) => {
+    // A task launched with `/autocomm "<task>"` is attributed to its own goal,
+    // not to the injected prompt, so follow-up reviews keep using it.
+    if (launchedActive && task?.external) {
+      launchedActive = false;
+      return;
+    }
     clearTask();
     if (event.messageType !== "user" || !event.prompt.trim()) return;
     const current: Task = { goal: excerpt(event.prompt, 4_000), advice: [], automatic: enabled && automatic };
@@ -95,9 +106,33 @@ export default function autocomm(pi: ExtensionAPI) {
   });
 
   pi.registerCommand(NAME, {
-    description: "OpenRouter advisor: on, auto, off, model, share, unshare, status",
+    description: "OpenRouter advisor: <task>, on, auto, off, model, share, unshare, status",
     handler: async (args, ctx) => {
-      const [, action = "status", value = ""] = /^(\S+)(?:\s+([\s\S]+))?$/.exec(args.trim()) ?? [];
+      const [, action = "", value = ""] = /^(\S+)(?:\s+([\s\S]+))?$/.exec(args.trim()) ?? [];
+      // A leading known subcommand is handled below; anything else is read as
+      // the advisor's goal, so an initial task never trips the usage hint.
+      const KNOWN = new Set(["model", "on", "auto", "off", "share", "unshare", "status"]);
+      if (!KNOWN.has(action) && action) {
+        if (!enabled) {
+          ctx.ui.notify("Turn the advisor on first with /autocomm on or /autocomm auto.", "warning");
+          return;
+        }
+        if (!modelId || !ctx.modelRegistry.find("openrouter", modelId) || !ctx.modelRegistry.hasConfiguredAuth(ctx.modelRegistry.find("openrouter", modelId))) {
+          ctx.ui.notify("Select an advisor with /autocomm model and sign in to OpenRouter first.", "warning");
+          return;
+        }
+        if (active) return;
+        const current: Task = { goal: excerpt(args.trim(), 4_000), advice: [], automatic, external: true };
+        task = current;
+        const suggestion = await consult(ctx, current, "kickoff");
+        if (!suggestion || task !== current || !enabled || ctx.signal?.aborted) return;
+        launchedActive = true;
+        if (typeof pi.sendUserMessage === "function") {
+          pi.sendUserMessage(adviceMessage(suggestion, true).content, { deliverAs: "steer" });
+        }
+        ctx.ui.notify(`AutoComm launched this task: ${excerpt(args.trim(), 240)}`, "info");
+        return;
+      }
       switch (action) {
         case "model": {
           let id = value;
@@ -177,6 +212,7 @@ export default function autocomm(pi: ExtensionAPI) {
           active?.abort();
           ctx.ui.notify(value ? `Stopped sharing: ${value}` : "Cleared all shared files.", "info");
           return;
+        case "":
         case "status":
           ctx.ui.notify(`AutoComm ${enabled ? automatic ? "auto" : "on" : "off"} | Advisor: ${modelId ?? "not selected"} | Up to ${automatic ? MAX_AUTO_FOLLOW_UPS : MAX_STEPS} follow-ups per task.\nShared files: ${sharedCwd === ctx.cwd && sharedFiles.size ? [...sharedFiles].join(", ") : "none"}`, "info");
           return;
@@ -188,7 +224,7 @@ export default function autocomm(pi: ExtensionAPI) {
 
   pi.on("agent_before_settle", async (event, ctx) => {
     const current = task;
-    if (!current || current.advice.length >= (current.automatic ? 1 + MAX_AUTO_FOLLOW_UPS : MAX_STEPS) ||
+    if (!current || current.advice.length >= (current.automatic || current.external ? 1 + MAX_AUTO_FOLLOW_UPS : MAX_STEPS) ||
         event.outcome !== "completed" || event.continue || event.context.pendingMessages.length) return;
 
     const reply = event.context.llmMessages.at(-1);

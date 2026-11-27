@@ -7,3 +7,4 @@ coverage/
 .pi/
 auth.json
 mcp-auth.json
+package-lock.json
