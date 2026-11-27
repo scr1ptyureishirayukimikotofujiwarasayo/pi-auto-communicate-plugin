@@ -79,7 +79,8 @@ export default function autocomm(pi: ExtensionAPI) {
   }
 
   function updateStatus(ctx: ExtensionContext) {
-    ctx.ui.setStatus(NAME, enabled ? `AutoComm${automatic ? " auto" : ""}: ${active ? "consulting " : ""}${advisorLabel()}` : undefined);
+    const phase = !enabled ? "off" : active ? `consulting ${advisorLabel()}` : "idle";
+    ctx.ui.setStatus(NAME, `AutoComm ${phase}`);
   }
 
   function setAdvisor(ctx: ExtensionContext, model: { provider: string; id: string }) {
@@ -87,7 +88,7 @@ export default function autocomm(pi: ExtensionAPI) {
     providerId = model.provider;
     modelId = model.id;
     updateStatus(ctx);
-    ctx.ui.notify(`AutoComm advisor: ${advisorLabel()}. Pi's coding model is unchanged.`, "info");
+    ctx.ui.notify(`AutoComm advisor: ${advisorLabel()}. Pi's coding model is unchanged. When auto is off, it does nothing.`, "info");
   }
 
   function clearTask() {
@@ -100,8 +101,9 @@ export default function autocomm(pi: ExtensionAPI) {
     clearTask();
     enabled = false;
     automatic = false;
-    providerId = undefined;
-    modelId = undefined;
+    // Default to Pi's current model; the menu can select a different advisor.
+    providerId = ctx.model?.provider;
+    modelId = ctx.model?.id;
     sharedFiles.clear();
     sharedCwd = undefined;
     updateStatus(ctx);
@@ -118,7 +120,7 @@ export default function autocomm(pi: ExtensionAPI) {
     }
   });
   pi.on("before_agent_start", async (event, ctx) => {
-    // A task launched with `/autocomm "<task>"` is attributed to its own goal,
+    // A task launched with `/autocomm auto on <task>` keeps its own goal,
     // not to the injected prompt, so follow-up reviews keep using it.
     if (launchedActive && task?.external) {
       launchedActive = false;
@@ -139,50 +141,67 @@ export default function autocomm(pi: ExtensionAPI) {
     return { message: adviceMessage(suggestion, true) };
   });
 
-  // Bare /autocomm opens this menu instead of a usage line. Each choice routes
-  // through runCommand with the canonical subcommand, so behaviour stays in one
-  // place and stays backward compatible with the explicit subcommand forms.
+  // Keep secondary controls in the menu; the command line only needs auto on/off.
   async function menu(ctx: ExtensionContext) {
-    if (!ctx.hasUI) return runCommand("", ctx);
-    const mode = enabled ? automatic ? "auto" : "on" : "off";
     const choice = await ctx.ui.select(
-      `AutoComm \u2014 ${mode}${advisorLabel() ? `, advisor ${advisorLabel()}` : ", no advisor"}`,
+      `AutoComm \u2014 ${enabled ? "auto on" : "off"}${advisorLabel() ? `, advisor ${advisorLabel()}` : ", no advisor"}`,
       [
-        "On \u2014 Pi leads, advisor reviews replies",
-        "Auto \u2014 advisor leads each task",
-        "Off",
+        "Start auto task",
+        "Enable auto mode",
+        "Disable auto mode",
         "Change advisor model",
         "Share a file",
+        "Unshare a file",
         "Unshare all files",
         "Show status",
       ],
     );
     if (choice === undefined) return;
-    if (choice === "On \u2014 Pi leads, advisor reviews replies") return runCommand("on", ctx);
-    if (choice === "Auto \u2014 advisor leads each task") return runCommand("auto", ctx);
-    if (choice === "Off") return runCommand("off", ctx);
-    if (choice === "Change advisor model") return runCommand("model", ctx);
-    if (choice === "Unshare all files") return runCommand("unshare", ctx);
-    if (choice === "Show status") return runCommand("status", ctx);
+    if (choice === "Enable auto mode") return runAction("auto", ctx);
+    if (choice === "Disable auto mode") return runAction("off", ctx);
+    if (choice === "Change advisor model") return runAction("model", ctx);
+    if (choice === "Unshare all files") return runAction("unshare", ctx);
+    if (choice === "Show status") return runAction("status", ctx);
+    if (choice === "Start auto task") {
+      const goal = await ctx.ui.input("Task for Pi and the advisor", "Describe the task");
+      if (goal?.trim()) return runCommand(`auto on ${goal.trim()}`, ctx);
+    }
     if (choice === "Share a file") {
       const path = await ctx.ui.input("Share a workspace file", "path/to/file");
-      if (path) return runCommand(`share ${path.trim()}`, ctx);
+      if (path?.trim()) return runAction(`share ${path.trim()}`, ctx);
+    }
+    if (choice === "Unshare a file") {
+      const path = await ctx.ui.input("Stop sharing a workspace file", "path/to/file");
+      if (path?.trim()) return runAction(`unshare ${path.trim()}`, ctx);
     }
   }
 
   async function runCommand(args: string, ctx: ExtensionContext) {
+    const input = args.trim();
+    if (!input) return ctx.hasUI ? menu(ctx) : runAction("status", ctx);
+    const match = /^auto\s+(on|off)(?:\s+([\s\S]+))?$/.exec(input);
+    if (!match || (match[1] === "off" && match[2])) {
+      ctx.ui.notify("Usage: /autocomm | /autocomm auto on [task] | /autocomm auto off", "warning");
+      return;
+    }
+    if (match[1] === "off") return runAction("off", ctx);
+    await runAction("auto", ctx);
+    if (match[2] && enabled && automatic) return runAction(match[2], ctx);
+  }
+
+  // Internal actions are reachable from the menu rather than public subcommands.
+  async function runAction(args: string, ctx: ExtensionContext) {
     const [, action = "", value = ""] = /^(\S+)(?:\s+([\s\S]+))?$/.exec(args.trim()) ?? [];
-    // A leading known subcommand is handled below; anything else is read as
-    // the advisor's goal, so an initial task never trips the usage hint.
+    // Unknown internal actions are task text supplied by auto on or the menu.
     const KNOWN = new Set(["model", "on", "auto", "off", "share", "unshare", "status"]);
     if (!KNOWN.has(action) && action) {
         if (!enabled) {
-          ctx.ui.notify("Turn the advisor on first with /autocomm on or /autocomm auto.", "warning");
+          ctx.ui.notify("Turn the advisor on first with /autocomm auto on.", "warning");
           return;
         }
         const advisorModel = providerId && modelId ? ctx.modelRegistry.find(providerId, modelId) : undefined;
         if (!advisorModel || !ctx.modelRegistry.hasConfiguredAuth(advisorModel)) {
-          ctx.ui.notify("Select an advisor with /autocomm model and sign in to its provider first.", "warning");
+          ctx.ui.notify("Select an advisor from the /autocomm menu and sign in to its provider first.", "warning");
           return;
         }
         if (active) return;
@@ -197,7 +216,6 @@ export default function autocomm(pi: ExtensionAPI) {
         ctx.ui.notify(`AutoComm launched this task: ${excerpt(args.trim(), 240)}`, "info");
         return;
       }
-    if (!action && ctx.hasUI) return menu(ctx);
     switch (action) {
       case "model": {
         let model = value ? resolveModel(ctx, value) : undefined;
@@ -220,7 +238,7 @@ export default function autocomm(pi: ExtensionAPI) {
         }
         if (!model) {
           if (!value) {
-            ctx.ui.notify("Use /autocomm model <provider/id>, or run /autocomm model interactively to pick from any configured provider.", "warning");
+            ctx.ui.notify("Pick an advisor from the /autocomm menu.", "warning");
           } else {
             ctx.ui.notify(`No available model matches "${value}". Add credentials with /login, or pick a model whose provider is configured.`, "warning");
           }
@@ -233,7 +251,7 @@ export default function autocomm(pi: ExtensionAPI) {
       case "auto": {
         const model = providerId && modelId ? ctx.modelRegistry.find(providerId, modelId) : undefined;
         if (!model) {
-          ctx.ui.notify("Pick an advisor first with /autocomm model.", "warning");
+          ctx.ui.notify("Pick an advisor first from the /autocomm menu.", "warning");
           return;
         }
         if (!ctx.modelRegistry.hasConfiguredAuth(model)) {
@@ -261,11 +279,11 @@ export default function autocomm(pi: ExtensionAPI) {
         }
         if (sharedFiles.has(value)) return;
         if (sharedFiles.size >= MAX_FILES) {
-          ctx.ui.notify(`Share at most ${MAX_FILES} files. Use /autocomm unshare first.`, "warning");
+          ctx.ui.notify(`Share at most ${MAX_FILES} files. Unshare one from the /autocomm menu first.`, "warning");
           return;
         }
         if (!value || !await readSharedFile(ctx.cwd, value)) {
-          ctx.ui.notify("Use /autocomm share <workspace-relative text file>. Hidden, sensitive-name, and out-of-workspace files are not accepted.", "warning");
+          ctx.ui.notify("Choose a workspace-relative text file. Hidden, sensitive-name, and out-of-workspace files are not accepted.", "warning");
           return;
         }
         if (sharedCwd !== ctx.cwd || sharedFiles.size >= MAX_FILES) return;
@@ -281,15 +299,15 @@ export default function autocomm(pi: ExtensionAPI) {
         return;
       case "":
       case "status":
-        ctx.ui.notify(`AutoComm ${enabled ? automatic ? "auto" : "on" : "off"} | Advisor: ${advisorLabel() ?? "not selected"} | Up to ${automatic ? MAX_AUTO_FOLLOW_UPS : MAX_STEPS} follow-ups per task.\nShared files: ${sharedCwd === ctx.cwd && sharedFiles.size ? [...sharedFiles].join(", ") : "none"}`, "info");
+        ctx.ui.notify(`AutoComm ${enabled ? "auto on" : "off"} | Advisor: ${advisorLabel() ?? "current Pi model"} | Phase: ${active ? "consulting" : "idle"}\nShared files: ${sharedCwd === ctx.cwd && sharedFiles.size ? [...sharedFiles].join(", ") : "none"}`, "info");
         return;
       default:
-        ctx.ui.notify("Usage: /autocomm on | auto | off | model [id] | share <path> | unshare [path] | status", "warning");
+        ctx.ui.notify("Usage: /autocomm | /autocomm auto on [task] | /autocomm auto off", "warning");
     }
   }
 
   pi.registerCommand(NAME, {
-    description: "Advisor (any configured provider) menu, or: <task>, on, auto, off, model, share, unshare, status",
+    description: "Advisor menu, or: auto on [task] | auto off",
     handler: (args, ctx) => runCommand(args, ctx),
   });
 
@@ -315,7 +333,7 @@ export default function autocomm(pi: ExtensionAPI) {
     if (!enabled || !providerId || !modelId || active || ctx.signal?.aborted || ctx.hasPendingMessages()) return;
     const model = ctx.modelRegistry.find(providerId, modelId);
     if (!model) {
-      ctx.ui.notify("AutoComm advisor is no longer in Pi's catalogue. Pick another with /autocomm model.", "warning");
+      ctx.ui.notify("AutoComm advisor is no longer in Pi's catalogue. Pick another from the /autocomm menu.", "warning");
       return;
     }
 

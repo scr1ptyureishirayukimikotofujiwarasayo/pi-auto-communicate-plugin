@@ -17,7 +17,7 @@ function setup(cwd = process.cwd()) {
   const notices = [];
   const selections = [];
   let command;
-  const state = { choose: undefined };
+  const state = { choose: undefined, input: undefined };
   const ctx = {
     cwd,
     hasUI: true,
@@ -28,6 +28,7 @@ function setup(cwd = process.cwd()) {
         selections.push({ title, choices });
         return Promise.resolve(state.choose ? state.choose(title, choices) : undefined);
       },
+      input: () => Promise.resolve(state.input),
     },
     hasPendingMessages: () => false,
     modelRegistry: {
@@ -60,6 +61,7 @@ function setup(cwd = process.cwd()) {
     selections,
     get choose() { return state.choose; },
     set choose(handler) { state.choose = handler; },
+    set input(value) { state.input = value; },
     events,
     command: args => command(args, ctx),
     start: prompt => events.get('before_agent_start')({ messageType: 'user', prompt }, ctx),
@@ -74,53 +76,68 @@ function setup(cwd = process.cwd()) {
   };
 }
 
-test('starts disabled, then forwards one short suggestion and stops at DONE', async () => {
+async function selectModel(app, advisor) {
+  app.choose = (title, choices) => title.startsWith('Advisor model')
+    ? choices.find(choice => choice.startsWith(`${advisor.provider}/${advisor.id}`))
+    : 'Change advisor model';
+  await app.command('');
+  app.choose = undefined;
+}
+
+async function menuInput(app, choice, input) {
+  app.choose = () => choice;
+  app.input = input;
+  await app.command('');
+  app.choose = undefined;
+  app.input = undefined;
+}
+
+test('starts disabled, then auto mode forwards suggestions and stops at DONE', async () => {
   const app = setup();
-  await app.command(`model ${advisorA.id}`);
-  app.start('Verify the greeting.');
+  await selectModel(app, advisorA);
+  await app.start('Verify the greeting.');
   assert.equal(await app.settle(), undefined);
   assert.equal(app.calls.length, 0);
 
-  await app.command('on');
-  app.plans.push('Run the greeting unit test.', 'DONE');
+  await app.command('auto on');
+  app.plans.push('Run the greeting unit test.', 'Check the result.', 'DONE');
+  const kickoff = await app.start('Verify the greeting.');
+  assert.match(kickoff.message.content, /Run the greeting unit test\./);
   const result = await app.settle();
   assert.equal(result.continue, true);
   assert.equal(result.entries[0].display, true);
-  assert.match(result.entries[0].content, /AutoComm advisor suggestion: Run the greeting unit test\./);
+  assert.match(result.entries[0].content, /AutoComm advisor suggestion: Check the result\./);
   const first = app.calls[0];
   assert.equal(first.model, advisorA);
   assert.equal(first.options.toolChoice, 'none');
   assert.equal(first.context.messages.length, 1);
   assert.deepEqual(JSON.parse(first.context.messages[0].content), {
-    phase: 'review', goal: 'Verify the greeting.', latestReply: 'Pi replied.', previousAdvice: [], workspaceFiles: [],
+    phase: 'kickoff', goal: 'Verify the greeting.', latestReply: '', previousAdvice: [], workspaceFiles: [],
   });
   assert.equal(await app.settle(), undefined);
   assert.deepEqual(JSON.parse(app.calls[1].context.messages[0].content).previousAdvice, ['Run the greeting unit test.']);
 });
 
-test('switches advisor models and caps follow-ups at three per task', async () => {
+test('switches advisor models through the menu between automatic reviews', async () => {
   const app = setup();
-  await app.command(`model ${advisorA.id}`);
-  await app.command('on');
-  app.start('Review the greeting.');
-  app.plans.push('Check one.', 'Check two.', 'Check three.', 'Check four.');
+  await selectModel(app, advisorA);
+  await app.command('auto on');
+  app.plans.push('Check one.', 'Check two.', 'DONE');
+  await app.start('Review the greeting.');
   assert.equal((await app.settle()).continue, true);
-  await app.command(`model ${advisorB.id}`);
-  assert.equal((await app.settle()).continue, true);
-  assert.equal((await app.settle()).continue, true);
+  await selectModel(app, advisorB);
   assert.equal(await app.settle(), undefined);
-  assert.deepEqual(app.calls.map(call => call.model), [advisorA, advisorB, advisorB]);
+  assert.deepEqual(app.calls.map(call => call.model), [advisorA, advisorA, advisorB]);
 });
 
 test('disabling the advisor cancels a pending request without forwarding advice', async () => {
   const app = setup();
-  await app.command(`model ${advisorA.id}`);
-  await app.command('on');
-  app.start('Check cancellation.');
+  await selectModel(app, advisorA);
+  await app.command('auto on');
   app.plans.push(() => new Promise(() => {}));
-  const pending = app.settle();
+  const pending = app.start('Check cancellation.');
   const { signal } = app.calls[0].options;
-  await app.command('off');
+  await app.command('auto off');
   assert.equal(signal.aborted, true);
   assert.equal(await pending, undefined);
 });
@@ -139,11 +156,11 @@ test('auto mode kicks off before Pi replies and reviews fresh excerpts of shared
   await writeFile(join(base, 'outside.ts'), 'outside');
 
   const app = setup(cwd);
-  await app.command(`model ${advisorA.id}`);
-  await app.command(`share ${path}`);
-  await app.command('share credentials.json');
-  await app.command('share ../outside.ts');
-  await app.command('auto');
+  await selectModel(app, advisorA);
+  await menuInput(app, 'Share a file', path);
+  await menuInput(app, 'Share a file', 'credentials.json');
+  await menuInput(app, 'Share a file', '../outside.ts');
+  await app.command('auto on');
   app.plans.push('Update the greeting.', 'Verify the greeting.', 'DONE');
   const kickoff = await app.start('Change the greeting.');
   assert.match(kickoff.message.content, /Update the greeting/);
@@ -159,15 +176,15 @@ test('auto mode kicks off before Pi replies and reviews fresh excerpts of shared
   assert.equal(checkpoint.latestReply, 'Pi replied.');
   assert.deepEqual(checkpoint.previousAdvice, ['Update the greeting.']);
   assert.deepEqual(checkpoint.workspaceFiles, [{ path, content: 'x'.repeat(4095), truncated: true }]);
-  await app.command(`unshare ${path}`);
+  await menuInput(app, 'Unshare a file', path);
   assert.equal(await app.settle(), undefined);
   assert.deepEqual(JSON.parse(app.calls[2].context.messages[0].content).workspaceFiles, []);
 });
 
 test('auto mode caps follow-ups and falls back to an ordinary run if kickoff returns DONE', async () => {
   const app = setup();
-  await app.command(`model ${advisorA.id}`);
-  await app.command('auto');
+  await selectModel(app, advisorA);
+  await app.command('auto on');
   assert.equal(await app.start('No kickoff needed.'), undefined);
   assert.equal(await app.settle(), undefined);
   assert.equal(app.calls.length, 1);
@@ -179,39 +196,37 @@ test('auto mode caps follow-ups and falls back to an ordinary run if kickoff ret
   assert.equal(app.calls.length, 10);
 });
 
-test('selecting a model with /autocomm model does not print a usage error', async () => {
+test('selecting a model through the menu confirms the selection', async () => {
   const app = setup();
-  await app.command(`model ${advisorA.id}`);
-  assert.ok(app.notices.every((notice) => !/^Usage:/.test(notice)));
+  await selectModel(app, advisorA);
   assert.ok(app.notices.some((notice) => notice.includes(advisorA.id)));
 });
 
-test('advisor can be any configured provider, selected as provider/id', async () => {
+test('advisor can be any configured provider, selected through the menu', async () => {
   const app = setup();
-  await app.command(`model ${advisorC.provider}/${advisorC.id}`); // github-copilot/gpt-5.2, no internal slash
-  await app.command('on');
-  app.start('Draft the change.');
+  await selectModel(app, advisorC);
+  await app.command('auto on');
   app.plans.push('Check the test matrix.', 'DONE');
-  assert.equal((await app.settle()).continue, true);
+  await app.start('Draft the change.');
+  assert.equal(await app.settle(), undefined);
   assert.equal(app.calls[0].model, advisorC, 'streamed on a non-OpenRouter provider');
 });
 
-test('a double-colon disambiguates provider for ids that contain slashes', async () => {
+test('model selection supports ids that contain slashes', async () => {
   const app = setup();
-  await app.command('model openrouter::example/advisor-a');
-  await app.command('on');
-  app.start('Verify the greeting.');
+  await selectModel(app, advisorA);
+  await app.command('auto on');
   app.plans.push('Check one.', 'DONE');
+  await app.start('Verify the greeting.');
   await app.settle();
   assert.equal(app.calls[0].model, advisorA, 'resolved provider=openrouter, id=example/advisor-a');
 });
 
-test('a quoted task sets the goal and launches with a kickoff instead of a usage error', async () => {
+test('auto on with a task sets the goal and launches with a kickoff', async () => {
   const app = setup();
-  await app.command(`model ${advisorA.id}`);
-  await app.command('on');
+  await selectModel(app, advisorA);
   app.plans.push('Add a test for the change.');
-  await app.command('Build a deterministic greeting and add a unit test for it.');
+  await app.command('auto on Build a deterministic greeting and add a unit test for it.');
   assert.equal(app.sent.length, 1);
   assert.match(app.sent[0], /AutoComm advisor suggestion: Add a test for the change\./);
   assert.deepEqual(JSON.parse(app.calls[0].context.messages[0].content), {
@@ -221,10 +236,9 @@ test('a quoted task sets the goal and launches with a kickoff instead of a usage
 
 test('a launched task keeps its own goal across follow-up reviews, not the injected prompt', async () => {
   const app = setup();
-  await app.command(`model ${advisorA.id}`);
-  await app.command('auto');
+  await selectModel(app, advisorA);
   app.plans.push('First milestone.', 'Second milestone.');
-  await app.command('Refactor the parser.');
+  await app.command('auto on Refactor the parser.');
   assert.equal(app.calls[0].context.messages[0].content.includes('Refactor the parser.'), true);
   // The injected user message starts a run; it must not be re-read as a new goal.
   assert.equal(await app.start('AutoComm advisor suggestion: First milestone.'), undefined);
@@ -233,39 +247,41 @@ test('a launched task keeps its own goal across follow-up reviews, not the injec
   assert.equal(JSON.parse(app.calls[1].context.messages[0].content).goal, 'Refactor the parser.');
 });
 
-test('an unknown /autocomm subcommand form still shows usage only for bare noise', async () => {
+test('public commands reject removed forms and unknown actions', async () => {
   const app = setup();
-  // Empty /autocomm behaves like status and never claims a launch.
+  for (const args of ['on', 'off', 'auto', 'model openrouter/example/advisor-a', 'share file.txt']) {
+    await app.command(args);
+    assert.match(app.notices.at(-1), /^Usage:/);
+  }
   assert.equal(await app.command(''), undefined);
   assert.equal(app.sent.length, 0);
 });
 
-test('bare /autocomm opens a menu offering every subcommand', async () => {
+test('bare /autocomm opens a menu for starting tasks and configuring the advisor', async () => {
   const app = setup();
   await app.command('');
   assert.equal(app.selections.length, 1);
   assert.match(app.selections[0].title, /AutoComm/);
   assert.deepEqual(app.selections[0].choices, [
-    'On \u2014 Pi leads, advisor reviews replies',
-    'Auto \u2014 advisor leads each task',
-    'Off',
+    'Start auto task',
+    'Enable auto mode',
+    'Disable auto mode',
     'Change advisor model',
     'Share a file',
+    'Unshare a file',
     'Unshare all files',
     'Show status',
   ]);
 });
 
-test('choosing On in the menu enables the advisor and keeps the goal on later reviews', async () => {
+test('choosing Start auto task prompts for the goal and launches a kickoff', async () => {
   const app = setup();
-  await app.command(`model ${advisorA.id}`);
-  app.choose = () => 'On \u2014 Pi leads, advisor reviews replies';
-  await app.command('');
-  app.start('Greet the reviewer.');
+  await selectModel(app, advisorA);
   app.plans.push('Run the test.', 'DONE');
-  const result = await app.settle();
-  assert.equal(result.continue, true);
-  assert.equal(JSON.parse(app.calls[0].context.messages[0].content).phase, 'review');
+  await menuInput(app, 'Start auto task', 'Greet the reviewer.');
+  assert.equal(app.sent.length, 1);
+  assert.equal(JSON.parse(app.calls[0].context.messages[0].content).phase, 'kickoff');
+  assert.equal(JSON.parse(app.calls[0].context.messages[0].content).goal, 'Greet the reviewer.');
 });
 
 test('choosing Show status in the menu routes to the status subcommand', async () => {
@@ -273,5 +289,5 @@ test('choosing Show status in the menu routes to the status subcommand', async (
   app.choose = () => 'Show status';
   await app.command('');
   assert.equal(app.selections.length, 1);
-  assert.match(app.notices.at(-1), /AutoComm off \| Advisor: not selected/);
+  assert.match(app.notices.at(-1), /AutoComm off \| Advisor: current Pi model \| Phase: idle/);
 });

@@ -18,66 +18,27 @@ pi -e ./extension.ts
 
 ## Use
 
-Sign in to whichever provider you want as the advisor with `/login` (for example `/login openrouter` or `/login github-copilot`), then run `/autocomm model` to pick any model you have credentials for, or run bare `/autocomm` to open a menu of every action. The advisor can differ from Pi's coding model, and changing it never touches Pi's model or session. To have it lead from the start, launch Pi in the project directory and use:
+AutoComm starts **off** and does nothing until you enable auto mode. It initially uses Pi's current model as the advisor. Open bare `/autocomm` to start a task, enable or disable auto mode, choose a different advisor, share files, or show status. Changing the advisor never changes Pi's coding model or session. Use `/login <provider>` first if the selected provider needs credentials.
 
-```text
-/autocomm share src/greeting.ts
-/autocomm auto
-Add an option for a custom greeting in src/greeting.ts and verify it with tests.
-```
-
-The advisor sees the goal and any shared file excerpts before Pi starts. At each checkpoint it receives Pi's latest reply and fresh excerpts, and can propose the next milestone. Sharing is optional; AutoComm doesn't scan your workspace or automatically share files mentioned in a prompt.
+Only these public command forms are supported:
 
 | Command | Effect |
 | --- | --- |
-| `/autocomm` | Open a menu: on, auto, off, change advisor, share a file, unshare, or show status. In a non-interactive run it shows status instead. |
-| `/autocomm model` | Open a searchable picker over every model you have credentials for (any provider). |
-| `/autocomm model <provider/id>` | Select or switch advisors without changing Pi's coding model. |
-| `/autocomm on` | Let Pi start on its own, then review its replies for up to three follow-ups. |
-| `/autocomm auto` | Start the next task with advisor guidance and allow up to eight follow-ups. |
-| `/autocomm off` | Disable the advisor and cancel any in-flight advisor request. Pi's current work continues. |
-| `/autocomm share <path>` | Include a workspace-relative text file in future advisor calls this session. Use `/` in paths. |
-| `/autocomm unshare [path]` | Remove one shared path, or clear the list if no path is given. This cannot retract data already sent. |
-| `/autocomm status` | Show the mode, advisor, follow-up limit, and shared paths. |
-| `/autocomm "<task>"` | In `auto` mode, launch this task: the advisor kicks it off and Pi runs it. Before `auto` is set, records the goal only. |
+| `/autocomm` | Open the configuration and task menu. In a non-interactive run, show status. |
+| `/autocomm auto on [task]` | Enable auto mode. With a task, ask the advisor for the first milestone and start Pi immediately. |
+| `/autocomm auto off` | Disable AutoComm and cancel its pending advisor request. Pi's current work continues. |
 
-AutoComm starts off. When enabled, it sends excerpts of your task and Pi's latest reply, previous advisor suggestions for that task, and the first 4 KiB of up to six explicitly shared files to your chosen advisor provider. Suggestions show up in the session. The loop stops at `DONE` or at the follow-up limit. If auto mode gets no usable kickoff advice, Pi handles the prompt normally without advisor follow-ups. Advisor requests can incur separate charges from that provider. **Excerpts are not redacted**; don't share files, prompts, or replies containing secrets.
+To start from the menu, choose **Start auto task** and enter the goal. To configure sharing, choose **Share a file**, **Unshare a file**, or **Unshare all files**. Sharing is optional and limited to workspace-relative text files.
 
-## Examples
-
-Pick an advisor from any provider you have credentials for. This only changes the advisor and does not disturb Pi's coding model or session, so you can switch at any time:
+For example:
 
 ```text
-/autocomm model anthropic/claude-opus-4.6
+/autocomm auto on Build a deterministic greeting function and add a unit test for it.
 ```
 
-Hand the advisor a task to lead. Turn automatic mode on first, then hand it the goal; AutoComm asks for a kickoff plan, starts Pi, and feeds back one milestone at a time:
+The advisor sees the goal and shared excerpts before Pi starts. At each checkpoint it receives Pi's latest reply and fresh excerpts, then proposes one milestone or replies `DONE`. The loop allows up to eight follow-ups. If kickoff produces no usable advice, Pi handles the original prompt normally without advisor follow-ups.
 
-```text
-/autocomm auto
-/autocomm Build a deterministic greeting function and add a unit test for it.
-```
-
-Review Pi's replies without leading it (`on` mode; up to three follow-ups; the advisor waits for Pi to reply first):
-
-```text
-/autocomm on
-```
-
-Give the advisor concrete files to reason over. A shared file's first 4 KiB is sent on every later call until you unshare it:
-
-```text
-/autocomm share src/greeting.ts
-/autocomm share tests/greeting.test.ts
-```
-
-Stop consulting and clean up:
-
-```text
-/autocomm unshare            # drop all shared files (cannot retract data already sent)
-/autocomm off                # disable the advisor and cancel any in-flight request
-/autocomm status             # show mode, advisor, follow-up limit, and shared paths
-```
+The status line is explicit: `AutoComm off`, `AutoComm idle`, or `AutoComm consulting <provider/model>`. Model selection alone does not enable the loop. AutoComm sends task and reply excerpts, previous advice, and the first 4 KiB of up to six explicitly shared files to the advisor provider. Requests can incur separate charges. **Excerpts are not redacted**; do not share secrets.
 
 ## Develop
 
