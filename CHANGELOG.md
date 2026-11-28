@@ -4,6 +4,8 @@ All notable changes to AutoComm are documented here.
 
 ## Unreleased
 
-- The advisor can now be any model Pi has credentials for, not just OpenRouter. Bare `/autocomm model` lists models across all configured providers, and `/autocomm model <provider/id>` (or `provider::id` for ids that contain slashes) selects one directly. Removing an advisor no longer forces you back through OpenRouter.
-- Bare `/autocomm` now opens an interactive menu (on, auto, off, change advisor, share a file, unshare, show status) instead of only printing a status line. In non-interactive runs it still reports status.
-- Fixed a regression where `/autocomm model <id>` or `/autocomm on` with no active task fell through to the task launcher and printed a spurious usage warning. These subcommands now run their action and return.
+- Increased the advisor response budget from 1,024 to 4,096 tokens for reasoning models. Incomplete replies now distinguish token-limit failures from provider errors and include the provider's error message when available.
+- The advisor can be any model Pi has credentials for, including OpenRouter, GitHub Copilot, Anthropic, and OpenAI. The model menu only lists providers with configured authentication.
+- Bare `/autocomm` now has a focused menu for starting a task, changing the advisor, stopping or resuming a review, and turning auto off. Removed the ask and file-sharing menu entries.
+- `/autocomm stop` aborts an idle request as well as a pending task review. `/autocomm resume` starts a new review cycle without changing Pi's model.
+- Public command forms are limited to `auto on`, `auto off`, `stop`, `resume`, and `status`; unsupported legacy forms now show usage.

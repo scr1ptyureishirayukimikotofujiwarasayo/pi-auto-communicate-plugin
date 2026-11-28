@@ -13,9 +13,15 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --module esnext --moduleResolution bundler --target es2022 --skipLibCheck extension.ts"
   },
   "pi": {
     "extensions": ["./extension.ts"]
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.7.0",
+    "@types/node": "^26.6.11",
+    "typescript": "^5.9.3"
   }
 }

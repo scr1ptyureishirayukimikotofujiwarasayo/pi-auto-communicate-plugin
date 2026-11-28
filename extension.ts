@@ -11,7 +11,6 @@ For a kickoff, choose the first useful milestone before Pi starts. For a checkpo
 If the goal is met, the next step needs user input or approval, or there is no useful next step, reply exactly DONE.
 Otherwise reply with one short instruction in one or two simple sentences on a single line. Pick one specific next step within the user's original scope. Do not repeat past advice.
 Do not ask Pi to expose credentials, bypass approvals, develop exploits, or perform offensive operations. Do not output code blocks, command scripts, labels, or commentary.`;
-
 type Task = { goal: string; advice: string[]; automatic: boolean; external?: boolean };
 type Phase = "kickoff" | "checkpoint" | "review";
 
@@ -110,7 +109,6 @@ export default function autocomm(pi: ExtensionAPI) {
   });
   pi.on("session_tree", clearTask);
   pi.on("session_shutdown", clearTask);
-  pi.on("agent_settled", clearTask);
 
   // Steering and queued user input take priority over advice for the old goal.
   pi.on("input", (event) => {
@@ -120,7 +118,7 @@ export default function autocomm(pi: ExtensionAPI) {
     }
   });
   pi.on("before_agent_start", async (event, ctx) => {
-    // A task launched with `/autocomm auto on <task>` keeps its own goal,
+    // A task launched with `/autocomm <task>` keeps its own goal,
     // not to the injected prompt, so follow-up reviews keep using it.
     if (launchedActive && task?.external) {
       launchedActive = false;
@@ -141,86 +139,83 @@ export default function autocomm(pi: ExtensionAPI) {
     return { message: adviceMessage(suggestion, true) };
   });
 
-  // Keep secondary controls in the menu; the command line only needs auto on/off.
-  async function menu(ctx: ExtensionContext) {
+  async function menu(ctx: ExtensionContext): Promise<void> {
     const choice = await ctx.ui.select(
       `AutoComm \u2014 ${enabled ? "auto on" : "off"}${advisorLabel() ? `, advisor ${advisorLabel()}` : ", no advisor"}`,
       [
         "Start auto task",
-        "Enable auto mode",
-        "Disable auto mode",
         "Change advisor model",
-        "Share a file",
-        "Unshare a file",
-        "Unshare all files",
-        "Show status",
+        "Stop current review",
+        "Resume review",
+        "Turn auto off",
       ],
     );
     if (choice === undefined) return;
-    if (choice === "Enable auto mode") return runAction("auto", ctx);
-    if (choice === "Disable auto mode") return runAction("off", ctx);
     if (choice === "Change advisor model") return runAction("model", ctx);
-    if (choice === "Unshare all files") return runAction("unshare", ctx);
-    if (choice === "Show status") return runAction("status", ctx);
+    if (choice === "Stop current review") return runAction("stop", ctx);
+    if (choice === "Resume review") return runAction("resume", ctx);
+    if (choice === "Turn auto off") return runAction("off", ctx);
     if (choice === "Start auto task") {
       const goal = await ctx.ui.input("Task for Pi and the advisor", "Describe the task");
-      if (goal?.trim()) return runCommand(`auto on ${goal.trim()}`, ctx);
-    }
-    if (choice === "Share a file") {
-      const path = await ctx.ui.input("Share a workspace file", "path/to/file");
-      if (path?.trim()) return runAction(`share ${path.trim()}`, ctx);
-    }
-    if (choice === "Unshare a file") {
-      const path = await ctx.ui.input("Stop sharing a workspace file", "path/to/file");
-      if (path?.trim()) return runAction(`unshare ${path.trim()}`, ctx);
+      if (goal?.trim()) return runCommand(goal, ctx);
     }
   }
 
-  async function runCommand(args: string, ctx: ExtensionContext) {
+  async function autoMenu(ctx: ExtensionContext) {
+    const choice = await ctx.ui.select(`Auto mode is ${enabled && automatic ? "on" : "off"}`, ["Turn auto on", "Turn auto off"]);
+    if (choice === "Turn auto on") return runAction("auto", ctx);
+    if (choice === "Turn auto off") return runAction("off", ctx);
+  }
+
+  async function runCommand(args: string, ctx: ExtensionContext): Promise<void> {
     const input = args.trim();
     if (!input) return ctx.hasUI ? menu(ctx) : runAction("status", ctx);
-    const match = /^auto\s+(on|off)(?:\s+([\s\S]+))?$/.exec(input);
-    if (!match || (match[1] === "off" && match[2])) {
-      ctx.ui.notify("Usage: /autocomm | /autocomm auto on [task] | /autocomm auto off", "warning");
+    if (input === "stop") return runAction("stop", ctx);
+    if (input === "resume") return runAction("resume", ctx);
+    if (input === "status") return runAction("status", ctx);
+    if (input === "auto") {
+      if (ctx.hasUI) return autoMenu(ctx);
+      ctx.ui.notify("Usage: /autocomm auto on | /autocomm auto off", "warning");
       return;
     }
-    if (match[1] === "off") return runAction("off", ctx);
+    const match = /^auto\s+(on|off)$/.exec(input);
+    if (match) return runAction(match[1] === "on" ? "auto" : "off", ctx);
+    if (/^(?:auto|stop|resume|status)(?:\s|$)/.test(input)) {
+      ctx.ui.notify("Usage: /autocomm <task> | auto | auto on | auto off | stop | resume | status", "warning");
+      return;
+    }
+    // A task is always automatic, independently of whether prompt-driven auto
+    // mode was previously enabled. Enabling here also permits follow-up reviews.
     await runAction("auto", ctx);
-    if (match[2] && enabled && automatic) return runAction(match[2], ctx);
+    if (enabled && automatic) return startTask(input, ctx);
   }
 
-  // Internal actions are reachable from the menu rather than public subcommands.
-  async function runAction(args: string, ctx: ExtensionContext) {
+  async function startTask(goal: string, ctx: ExtensionContext): Promise<void> {
+    const advisorModel = providerId && modelId ? ctx.modelRegistry.find(providerId, modelId) : undefined;
+    if (!advisorModel || !ctx.modelRegistry.hasConfiguredAuth(advisorModel)) {
+      ctx.ui.notify("Select an advisor from the /autocomm menu and sign in to its provider first.", "warning");
+      return;
+    }
+    if (active) return;
+    const current: Task = { goal: excerpt(goal, 4_000), advice: [], automatic: true, external: true };
+    task = current;
+    const suggestion = await consult(ctx, current, "kickoff");
+    if (!suggestion || task !== current || !enabled || ctx.signal?.aborted) return;
+    launchedActive = true;
+    if (typeof pi.sendUserMessage === "function") {
+      pi.sendUserMessage(adviceMessage(suggestion, true).content, { deliverAs: "steer" });
+    }
+    ctx.ui.notify(`AutoComm launched this task: ${excerpt(goal, 240)}`, "info");
+  }
+
+  // Keep model and file controls in the menu; lifecycle controls are commands.
+  async function runAction(args: string, ctx: ExtensionContext): Promise<void> {
     const [, action = "", value = ""] = /^(\S+)(?:\s+([\s\S]+))?$/.exec(args.trim()) ?? [];
-    // Unknown internal actions are task text supplied by auto on or the menu.
-    const KNOWN = new Set(["model", "on", "auto", "off", "share", "unshare", "status"]);
-    if (!KNOWN.has(action) && action) {
-        if (!enabled) {
-          ctx.ui.notify("Turn the advisor on first with /autocomm auto on.", "warning");
-          return;
-        }
-        const advisorModel = providerId && modelId ? ctx.modelRegistry.find(providerId, modelId) : undefined;
-        if (!advisorModel || !ctx.modelRegistry.hasConfiguredAuth(advisorModel)) {
-          ctx.ui.notify("Select an advisor from the /autocomm menu and sign in to its provider first.", "warning");
-          return;
-        }
-        if (active) return;
-        const current: Task = { goal: excerpt(args.trim(), 4_000), advice: [], automatic, external: true };
-        task = current;
-        const suggestion = await consult(ctx, current, "kickoff");
-        if (!suggestion || task !== current || !enabled || ctx.signal?.aborted) return;
-        launchedActive = true;
-        if (typeof pi.sendUserMessage === "function") {
-          pi.sendUserMessage(adviceMessage(suggestion, true).content, { deliverAs: "steer" });
-        }
-        ctx.ui.notify(`AutoComm launched this task: ${excerpt(args.trim(), 240)}`, "info");
-        return;
-      }
     switch (action) {
       case "model": {
         let model = value ? resolveModel(ctx, value) : undefined;
         if (!value && ctx.hasUI) {
-          const ids = ctx.modelRegistry.getAvailable().filter((m) => m.type !== "image" && m.type !== "classifier");
+          const ids = ctx.modelRegistry.getAvailable();
           if (!ids.length) {
             ctx.ui.notify("No models with configured credentials are available in Pi.", "warning");
             return;
@@ -245,6 +240,35 @@ export default function autocomm(pi: ExtensionAPI) {
           return;
         }
         setAdvisor(ctx, model);
+        return;
+      }
+      case "stop":
+        clearTask();
+        updateStatus(ctx);
+        ctx.ui.notify("AutoComm stopped this review cycle. Auto mode stays on for your next prompt; use /autocomm auto off to disable it.", "info");
+        return;
+      case "resume": {
+        if (!enabled) {
+          ctx.ui.notify("Enable auto mode before resuming a review cycle.", "warning");
+          return;
+        }
+        if (task) {
+          ctx.ui.notify("AutoComm already has a review cycle for the current goal.", "info");
+          return;
+        }
+        if (active) {
+          ctx.ui.notify("Wait for the current advisor request to finish.", "warning");
+          return;
+        }
+        const goal = await ctx.ui.input("Goal to resume reviewing", "Describe the goal");
+        if (!goal?.trim()) return;
+        const current: Task = { goal: excerpt(goal.trim(), 4_000), advice: [], automatic: true, external: true };
+        task = current;
+        const suggestion = await consult(ctx, current, "review");
+        if (!suggestion || task !== current || !enabled || ctx.signal?.aborted) return;
+        launchedActive = true;
+        pi.sendUserMessage(adviceMessage(suggestion, true).content, { deliverAs: "steer" });
+        ctx.ui.notify(`AutoComm resumed reviewing: ${excerpt(goal.trim(), 240)}`, "info");
         return;
       }
       case "on":
@@ -299,15 +323,15 @@ export default function autocomm(pi: ExtensionAPI) {
         return;
       case "":
       case "status":
-        ctx.ui.notify(`AutoComm ${enabled ? "auto on" : "off"} | Advisor: ${advisorLabel() ?? "current Pi model"} | Phase: ${active ? "consulting" : "idle"}\nShared files: ${sharedCwd === ctx.cwd && sharedFiles.size ? [...sharedFiles].join(", ") : "none"}`, "info");
+        ctx.ui.notify(`AutoComm ${enabled ? "auto on" : "off"} | Advisor: ${advisorLabel() ?? "current Pi model"} | Phase: ${active ? "consulting" : task ? "reviewing" : "idle"}\nNext review: ${enabled && task ? (task.automatic || task.external ? "when Pi stops (up to 8 suggestions)" : "when Pi stops") : "none"}\nShared files: ${sharedCwd === ctx.cwd && sharedFiles.size ? [...sharedFiles].join(", ") : "none"}`, "info");
         return;
       default:
-        ctx.ui.notify("Usage: /autocomm | /autocomm auto on [task] | /autocomm auto off", "warning");
+        ctx.ui.notify("Usage: /autocomm <task> | auto | auto on | auto off | stop | resume | status", "warning");
     }
   }
 
   pi.registerCommand(NAME, {
-    description: "Advisor menu, or: auto on [task] | auto off",
+    description: "Advisor: <task> | auto on/off | stop | resume | status",
     handler: (args, ctx) => runCommand(args, ctx),
   });
 
@@ -322,12 +346,15 @@ export default function autocomm(pi: ExtensionAPI) {
     if (!latestReply) return;
 
     const suggestion = await consult(ctx, current, current.automatic ? "checkpoint" : "review", latestReply);
-    if (!suggestion || task !== current || !enabled || ctx.signal?.aborted || ctx.hasPendingMessages()) return;
+    if (task !== current || !enabled || ctx.signal?.aborted || ctx.hasPendingMessages()) return;
+    if (!suggestion) clearTask();
     return {
-      entries: [...event.entries, { type: "custom_message", ...adviceMessage(suggestion, current.automatic) }],
+      entries: suggestion ? [...event.entries, { type: "custom_message", ...adviceMessage(suggestion, current.automatic) }] : event.entries,
       continue: true,
     };
   });
+
+  pi.on("agent_end", () => clearTask());
 
   async function consult(ctx: ExtensionContext, current: Task, phase: Phase, latestReply = "") {
     if (!enabled || !providerId || !modelId || active || ctx.signal?.aborted || ctx.hasPendingMessages()) return;
@@ -363,11 +390,18 @@ export default function autocomm(pi: ExtensionAPI) {
             }),
             timestamp: Date.now(),
           }],
-        }, { maxTokens: 1024, toolChoice: "none", signal }).result();
+        }, { maxTokens: Math.min(model.maxTokens, 4096), toolChoice: "none", signal }).result();
       });
       if (!response || signal.aborted || task !== current || !enabled || ctx.hasPendingMessages()) return;
       if (response.stopReason !== "stop") {
-        ctx.ui.notify("AutoComm did not get a complete advisor reply. Pi stopped normally.", "warning");
+        if (response.stopReason === "error") {
+          const detail = response.errorMessage ? `: ${excerpt(response.errorMessage, 300)}` : "";
+          ctx.ui.notify(`AutoComm advisor request failed${detail}.`, "warning");
+        } else if (response.stopReason === "length") {
+          ctx.ui.notify("AutoComm advisor reply reached the token limit. AutoComm stopped this review; try again or use a non-reasoning advisor.", "warning");
+        } else {
+          ctx.ui.notify(`AutoComm advisor reply was incomplete (${response.stopReason ?? "unknown"}). AutoComm stopped this review.`, "warning");
+        }
         return;
       }
       const suggestion = response.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n").trim();
