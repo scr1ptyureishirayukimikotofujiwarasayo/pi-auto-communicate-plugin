@@ -41,9 +41,9 @@ For example:
 /autocomm Build a deterministic greeting function and add a unit test for it.
 ```
 
-Alternatively, run `/autocomm auto on` (or select **Turn auto on** through `/autocomm auto`) and then enter your task as an ordinary Pi prompt. AutoComm uses that first prompt as the goal and gives Pi the advisor's initial instruction. After each completed Pi reply, it automatically sends the next instruction until the advisor replies `DONE`, a blocker needs your attention, or the follow-up limit is reached.
+Alternatively, run `/autocomm auto on` (or select **Turn auto on** through `/autocomm auto`) and then enter your task as an ordinary Pi prompt. AutoComm uses that first prompt as the goal and gives Pi the advisor's initial instruction. After each completed Pi reply, it automatically sends the next instruction until the advisor replies `DONE`, repeats advice, encounters an error, or you stop it.
 
-The advisor sees the goal before Pi starts. At each checkpoint it receives Pi's latest reply, then proposes one milestone or replies `DONE`. The loop allows up to eight follow-ups. If kickoff for an ordinary prompt produces no usable advice, Pi handles that prompt normally without advisor follow-ups; a direct or menu-started task does not start without usable advice.
+The advisor sees the goal before Pi starts. At each checkpoint it receives Pi's latest reply, then proposes one milestone or replies `DONE`. If kickoff for an ordinary prompt produces no usable advice, Pi handles that prompt normally without advisor follow-ups; a direct or menu-started task does not start without usable advice.
 
 The status line is explicit: `AutoComm off`, `AutoComm idle`, or `AutoComm consulting <provider/model>`. Model selection alone does not enable the loop. AutoComm sends task and reply excerpts and previous advice to the advisor provider. Requests can incur separate charges. **Excerpts are not redacted**; do not include secrets in tasks or replies.
 

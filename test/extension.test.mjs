@@ -70,7 +70,8 @@ function setup(cwd = process.cwd()) {
         llmMessages: [{ role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Pi replied.' }] }],
       },
     }, ctx),
-    end: () => events.get('agent_end')({}, ctx),
+    end: () => events.get('agent_end')?.({}, ctx),
+    settled: () => events.get('agent_settled')?.({}, ctx),
   };
 }
 
@@ -113,17 +114,18 @@ test('starts disabled, then auto mode forwards suggestions and stops at DONE', a
   assert.deepEqual(JSON.parse(first.context.messages[0].content), {
     phase: 'kickoff', goal: 'Verify the greeting.', latestReply: '', previousAdvice: [], workspaceFiles: [],
   });
-  assert.equal((await app.settle()).continue, true);
+  assert.equal(await app.settle(), undefined, 'DONE returns undefined so Pi settles without an extra turn');
   assert.deepEqual(JSON.parse(app.calls[1].context.messages[0].content).previousAdvice, ['Run the greeting unit test.']);
-  await app.end();
-  assert.equal(app.events.has('agent_settled'), false, 'stopping is confirmed at agent_end, not agent_settled');
+  await app.settled();
+  assert.equal(app.events.has('agent_end'), false, 'task must survive agent_end so agent_before_settle can run');
+  assert.equal(app.events.has('agent_settled'), true, 'cleanup happens at agent_settled');
 });
 
 test('switches advisor models through the menu between automatic reviews', async () => {
   const app = setup();
   await selectModel(app, advisorA);
   await app.command('auto on');
-  app.plans.push('Check one.', 'Check two.');
+  app.plans.push('Check one.', 'Check two.', 'Check three.');
   await app.start('Review the greeting.');
   assert.equal((await app.settle()).continue, true);
   await selectModel(app, advisorB);
@@ -143,20 +145,24 @@ test('disabling the advisor cancels a pending request without forwarding advice'
   assert.equal(await pending, undefined);
 });
 
-test('auto mode caps follow-ups and falls back to an ordinary run if kickoff returns DONE', async () => {
+test('auto mode continues past 8 follow-ups until DONE and falls back to an ordinary run if kickoff returns DONE', async () => {
   const app = setup();
   await selectModel(app, advisorA);
   await app.command('auto on');
   assert.equal(await app.start('No kickoff needed.'), undefined);
   assert.equal(await app.settle(), undefined, 'a DONE kickoff leaves the original prompt to Pi');
   assert.equal(app.calls.length, 1);
-  await app.end();
-  app.plans.push(...Array.from({ length: 10 }, (_, index) => `Check item ${index}.`));
+  await app.settled();
+  app.plans.push(...Array.from({ length: 12 }, (_, index) => `Check item ${index}.`), 'DONE - all checks passed');
   assert.match((await app.start('Check the items.')).message.content, /Check item 0/);
 
-  for (let i = 0; i < 8; i++) assert.equal((await app.settle()).continue, true);
-  assert.equal(await app.settle(), undefined);
-  assert.equal(app.calls.length, 10);
+  for (let i = 0; i < 11; i++) {
+    await app.end(); // agent_end fires before agent_before_settle in Pi
+    assert.equal((await app.settle()).continue, true);
+  }
+  await app.end();
+  assert.equal(await app.settle(), undefined, 'DONE with trailing note stops cleanly');
+  assert.equal(app.calls.length, 14);
 });
 
 test('selecting a model through the menu confirms the selection', async () => {
@@ -169,7 +175,7 @@ test('advisor can be any configured provider, selected through the menu', async 
   const app = setup();
   await selectModel(app, advisorC);
   await app.command('auto on');
-  app.plans.push('Check the test matrix.');
+  app.plans.push('Check the test matrix.', 'Verify edge cases.');
   await app.start('Draft the change.');
   assert.equal((await app.settle()).continue, true);
   assert.equal(app.calls[0].model, advisorC, 'streamed on a non-OpenRouter provider');
@@ -284,20 +290,20 @@ test('choosing Start auto task prompts for the goal and launches a kickoff', asy
   assert.equal(JSON.parse(app.calls[0].context.messages[0].content).goal, 'Greet the reviewer.');
 });
 
-test('DONE and failed reviews still settle, and every cycle is cleaned up at agent_end', async () => {
+test('DONE and failed reviews still settle, and every cycle is cleaned up at agent_settled', async () => {
   const app = setup();
   await selectModel(app, advisorA);
   await app.command('auto on');
   app.plans.push('Start checking.', 'Check once.');
   await app.start('Check the result.');
-  assert.equal((await app.settle()).continue, true);
-  const done = await app.settle();
-  assert.equal(done.continue, true);
-  assert.equal(done.entries.length, 0);
-  assert.equal(await app.settle(), undefined, 'DONE prevents another advisor call in this cycle');
   await app.end();
+  assert.equal((await app.settle()).continue, true);
+  await app.end();
+  assert.equal(await app.settle(), undefined, 'DONE settles without continue: true');
+  assert.equal(await app.settle(), undefined, 'DONE prevents another advisor call in this cycle');
+  await app.settled();
   await app.start('A fresh goal.');
-  assert.equal(app.calls.length, 4, 'agent_end permits a new goal');
+  assert.equal(app.calls.length, 4, 'agent_settled permits a new goal');
 });
 
 test('stop cancels the active review but leaves auto mode enabled for a new prompt', async () => {

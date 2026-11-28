@@ -9,3 +9,5 @@ All notable changes to AutoComm are documented here.
 - Bare `/autocomm` now has a focused menu for starting a task, changing the advisor, stopping or resuming a review, and turning auto off. Removed the ask and file-sharing menu entries.
 - `/autocomm stop` aborts an idle request as well as a pending task review. `/autocomm resume` starts a new review cycle without changing Pi's model.
 - Public command forms are limited to `auto on`, `auto off`, `stop`, `resume`, and `status`; unsupported legacy forms now show usage.
+- Fixed automatic follow-ups not firing by cleaning up active tasks on `agent_settled` instead of `agent_end` (which fires before `agent_before_settle`), and stopped returning `continue: true` when the advisor replies `DONE` or fails.
+- Removed the 8-follow-up cap in auto mode so the advisor and Pi continue until `DONE` (including trailing notes like `DONE - ...`), repeated advice, error, or user stop.
